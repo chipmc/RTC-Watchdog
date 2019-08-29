@@ -18,7 +18,6 @@
     3 - Houly repeating alarm example (long form)
 */
 
-// If you are looking for a DS1339 module, I have one shared on OSHPark - https://oshpark.com/shared_projects/rNxANV7V
 
 
 #include <DSRTCLib.h>                                                             // This is the library for the DS1339
