@@ -18,3 +18,5 @@ This goal for this project is to provide a more flexible - programmable - watchd
 3) Use as an external watchdog timer when tied to the reset pin
 
 Thank you to Sridhar Rajagopol for the original DSRTC library.
+
+This work was sponsored by Jay Ham, Colorado State University - Thank You!
