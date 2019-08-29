@@ -129,7 +129,7 @@ void secondsTillAlarm() {
   RTC.alarmSeconds(alarmSeconds);
 }
 
-void minuteRepeatingAlarm()                                                       // Shows the repeating alarm frequency
+void minuteRepeatingAlarm()                                                       // Setting an alarm like this will set an alarm to go off every 60 seconds from when it is set
 {                                                       
   if (Particle.connected()) {
     waitUntil(meterParticlePublish);
@@ -151,7 +151,7 @@ void hourlyRepeatingAlarm()                                                     
   RTC.setAlarmRepeat(EVERY_HOUR);                                                 // There is no DS1339 setting for 'alarm once' - user must shut off the alarm after it goes off.
 
   RTC.setSeconds(0);                                                              // Here we can set an alarm frequency
-  RTC.setMinutes(1);
+  RTC.setMinutes(1);                                                              // The alarm will go off at 1 minute after the hour every hour (eg 10:01:00 AM)
   RTC.setHours(0);
   RTC.setDays(0);
   RTC.setMonths(0);
