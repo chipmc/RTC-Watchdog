@@ -136,7 +136,7 @@ void minuteRepeatingAlarm()                                                     
     waitUntil(meterParticlePublish);
     Particle.publish("Alarm","Repeating every minute",PRIVATE);                   // Message to let you know what is going on
   }             
-  RTC.disable_interrupt();                                                        // Prevent an immediate interrupt             
+  RTC.disable_interrupt();                                                        // Prevent an immediate interrupt since this alarm starts from now       
   RTC.setAlarmRepeat(EVERY_MINUTE);                                               // if alarming every minute, time registers larger than 1 second (hour, etc.) are don't-care
   RTC.writeAlarm();                                                               // Choices are: EVERY_SECOND, EVERY_MINUTE, EVERY_HOUR, EVERY_DAY, EVERY_WEEK, EVERY_MONTH
   RTC.clear_interrupt();                                                          // This prevents a alarm interrupt as soon as the alarm is set
@@ -159,10 +159,6 @@ void hourlyRepeatingAlarm()                                                     
   RTC.setYears(0);
 
   RTC.writeAlarm();                                                               // Write the alarm to the registers
-  delay(500);
-  RTC.readAlarm();                                                                // This puts the Alarm time into the registers
-
-  publishRTCTime();                                                               // This will publish the alarm time
  }
 
 // Helper Functions for Particle Functions and other utility functions

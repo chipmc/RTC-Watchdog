@@ -1,436 +1,223 @@
-#include <DSRTCLib.h>
-#include <Wire.h>
-#include <avr/power.h>
-#include <avr/sleep.h>
-
 /*
-  DS1339 RTC Example
-  Tests and examples for common RTC library features.
-  This shows the basic functions (reading and setting time/alarm values), converting back and forth between epoch seconds and calendar dates,
-  and using alarm interrupts.
-
-  Don't let the 'Binary sketch size' throw you; this example file and all its print statements add a lot of overhead.
- 
+ * Project RTC-Watchdog
+ * Description: A simple application for us to show the power of a varialbe external Real Time Clock to wake the Particle device
+ * Use Case: The Particle device can set a wake up interval and go to sleep.  That is it!
+ * Acknowledgement: This work builds on the DSRTCLib library by Sridhar Rajagopal https://github.com/sridharrajagopal
+ * Author: Chip McClelland chip@seeinsights.com
+ * Date: 8/28/19
  */
 
+/*  EEPROM Mapping
+    0 - Time Zone Setting
+    1 - Sleep Test Enabled
 
-int ledPin =  13;    // LED connected to digital pin 13
-int INT_PIN = 2; // INTerrupt pin from the RTC. On Arduino Uno, this should be mapped to digital pin 2 or pin 3, which support external interrupts
-int int_number = 0; // On Arduino Uno, INT0 corresponds to pin 2, and INT1 to pin 3
+    Demo Modes (to showcase RTC functionality) - set with Particle Functions
+    0 - No sleeping for you!
+    1 - Sleep for sleepSeconds and then the RTC wakes you
+    2 - Repeating alarm example (every minute)
+    3 - Houly repeating alarm example (long form)
+*/
 
-DS1339 RTC = DS1339(INT_PIN, int_number);
+// If you are looking for a DS1339 module, I have one shared on OSHPark - https://oshpark.com/shared_projects/rNxANV7V
 
 
-void setup()   {                
-  pinMode(INT_PIN, INPUT);
-  digitalWrite(INT_PIN, HIGH);
+#include <DSRTCLib.h>                                                             // This is the library for the DS1339
+
+int INT_PIN = D3;                                                                 // INTerrupt pin from the RTC. 
+
+// Prototypes and System Mode calls
+DS1339 RTC = DS1339(INT_PIN);                                                     // Instantiate the library - need to lose the int number input
+
+const char releaseNumber[6] = "0.11";                                             // Displays the release on the console
+int alarmMode = 0;                                                                // Sets the sleep mode (0-none, 1-defined seconds, 2-repeating interval)
+int alarmSeconds = 10;                                                            // How long will we sleep in mode 1
+volatile bool alarmFlag = false;
+
+void setup()   {              
+  Particle.variable("Release",releaseNumber);
   
-  pinMode(ledPin, OUTPUT);    
-  digitalWrite(ledPin, LOW);
+  Particle.function("Set-Timezone",setTimeZone);                                  // Set the local timezone (-12,12)
+  Particle.function("Alarm-Mode", setAlarmMode);                                  // Sets the sleep mode (0-none, 1-defined seconds, 2-repeating interval)
+  Particle.function("Alarm-Seconds",setAlarmSeconds);                             // Allows us to sleep for a set nuber of seconds       
 
+  Time.zone((float)EEPROM.read(0));                                               // Retain time zone setting through power cycle
 
-  // enable deep sleeping
-  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-  sleep_enable();
+  RTC.start();                                                                    // Ensure RTC oscillator is running, if not already  
+  RTC.enable_interrupt();                                                         // This stops the 1 Hz squarewave on INT and allows us to set alarms
 
-  Serial.begin(38400);
-  Serial.println ("DSRTCLib Tests");
-
-  RTC.start(); // ensure RTC oscillator is running, if not already
-  
-  if(!RTC.time_is_set()) // set a time, if none set already...
-  {
-    Serial.print("Clock not set. ");
-    set_time();
+  if(!RTC.time_is_set() && Particle.connected()) {                                // set a time, if none set already...
+    Particle.publish("Timer","Clock Not Set",PRIVATE);                            // With a coin cell battery, this should be a rare event
+    syncRTCtoParticleTime();                                                      // We will set the DS1339 clock to the Particle time
   }
   
-  // If the oscillator is borked (or not really talking to the RTC), try to warn about it
-  if(!RTC.time_is_set())
-  {
-    Serial.println("Clock did not set! Check that its oscillator is working.");
+  if(!RTC.time_is_set() && Particle.connected()) {                                // If the oscillator is borked (or not really talking to the RTC), try to warn about it
+    Particle.publish("Timer","Check the oscillator",PRIVATE);                     // With a coin cell battery, this should be a rare event
   }
-}
 
-int read_int(char sep)
-{
-  static byte c;
-  static int i;
-
-  i = 0;
-  while (1)
-  {
-    while (!Serial.available())
-    {;}
- 
-    c = Serial.read();
-    // Serial.write(c);
-  
-    if (c == sep)
-    {
-      // Serial.print("Return value is");
-      // Serial.println(i);
-      return i;
-    }
-    if (isdigit(c))
-    {
-      i = i * 10 + c - '0';
-    }
-    else
-    {
-      Serial.print("\r\nERROR: \"");
-      Serial.write(c);
-      Serial.print("\" is not a digit\r\n");
-      return -1;
-    }
-  }
-}
-
-int read_int(int numbytes)
-{
-  static byte c;
-  static int i;
-  int num = 0;
-
-  i = 0;
-  while (1)
-  {
-    while (!Serial.available())
-    {;}
- 
-    c = Serial.read();
-    num++;
-    // Serial.write(c);
-  
-    if (isdigit(c))
-    {
-      i = i * 10 + c - '0';
-    }
-    else
-    {
-      Serial.print("\r\nERROR: \"");
-      Serial.write(c);
-      Serial.print("\" is not a digit\r\n");
-      return -1;
-    }
-    if (num == numbytes)
-    {
-      // Serial.print("Return value is");
-      // Serial.println(i);
-      return i;
-    }
-  }
-}
-
-int read_date(int *year, int *month, int *day, int *hour, int* minute, int* second)
-{
-
-  *year = read_int(4);
-  *month = read_int(2);
-  *day = read_int(' ');
-  *hour = read_int(':');
-  *minute = read_int(':');
-  *second = read_int(2);
-
-  return 0;
-}
-
-void nap()
-{
-  // Dummy function. We don't actually want to do anything here, just use an interrupt to wake up.
-  //RTC.clear_interrupt();
-  // For some reason, sending commands to clear the interrupt on the RTC here does not work. Maybe Wire uses interrupts itself?
-  Serial.print(".");
-
+  attachInterrupt(INT_PIN, pinInterruptHandler, FALLING);                         // Attach an interrupt so we can test the alarms
 }
 
 void loop()                     
 {
-  Serial.flush();
-  Serial.println ("\nRTC Library Tests \n 1) Basic (read and write time) \n 2) Alarm interrupts/wakeup \n 3) date <--> epoch seconds validation \n 4) Read time \n 5) Set time \n");
-  Serial.flush();
+  switch (alarmMode) {
+    case 0: 
+      timeCheckRTC();                                                                // Check the time each second and update the registers
+      break;
+    case 1:
+      secondsTillAlarm();                                                         // Set an alarm to go off in alarmSeconds (which is set in a Particle function - default 10)
+      alarmMode = 0;                                                              // Go back to default state                                                        
+    break;
+    case 2: 
+      minuteRepeatingAlarm();                                                     // Sets an alarm to go off every minute
+      alarmMode = 0;                                                              // Go back to default state
+    break;
+    case 3:
+      hourlyRepeatingAlarm();                                                     // You guessed it...every hour
+      alarmMode = 0;                                                              // back
+    break;
+  }  
 
-
-  while(!Serial.available()){}
-  
-  switch(Serial.read())
-  {
-    case '1':
-      test_basic();
-      break;
-    case '2':
-      test_interrupts();
-      break;      
-    case '3':
-      test_epoch_seconds();
-      break;  
-    case '4':
-      read_time();
-      break;
-    case '5':
-      set_time();
-    default:
-      break;
-    
+  if (alarmFlag) {                                                                // Checks the Alarm flag set in the interrupt handler
+    RTC.clear_interrupt();                                                        // tell RTC to clear its interrupt flag and drop the INT line
+    if (Particle.connected()) {
+      waitUntil(meterParticlePublish);
+      Particle.publish("Alarm","Alarm detected", PRIVATE);
+    }
+    alarmFlag = false;                                                            // Reset the flag
   }
-
 }
 
-void set_time()
-{
-    Serial.println("Enter date and time (YYYYMMDD HH:MM:SS)");
-    int year, month, day, hour, minute, second;
-    int result = read_date(&year, &month, &day, &hour, &minute, &second);
-    if (result != 0) {
-      Serial.println("Date not in correct format!");
-      return;
-    } 
-    
-    // set initially to epoch
-    RTC.setSeconds(second);
-    RTC.setMinutes(minute);
-    RTC.setHours(hour);
-    RTC.setDays(day);
-    RTC.setMonths(month);
-    RTC.setYears(year);
-    RTC.writeTime();
-    read_time();
+void timeCheckRTC() {
+  static unsigned long lastTimeCheck = 0;
+  static int currentMinute = 0;
+  if (millis() >= lastTimeCheck + 1000) {                                         // Check the time every 10 seconds
+    RTC.readTime();                                                               // Load the time into the registers
+    if (RTC.getMinutes() != currentMinute) {
+      publishRTCTime();                                                           // Publish the current time to the Particle console
+      currentMinute = RTC.getMinutes();                                           // Update the current minute
+    }
+    lastTimeCheck = millis();                                                     // Update for next check
+  }
 }
 
-void read_time() 
-{
-  Serial.print ("The current time is ");
-  RTC.readTime(); // update RTC library's buffers from chip
-  printTime(0);
-  Serial.println();
-
+void syncRTCtoParticleTime()                                                      // Calling this function sets the RTC clock to the Particle clock 
+{    
+    RTC.setSeconds(Time.second());
+    RTC.setMinutes(Time.minute());
+    RTC.setHours(Time.hour());
+    RTC.setDays(Time.day());
+    RTC.setMonths(Time.month());
+    RTC.setYears(Time.year());
+    RTC.writeTime();                                                              // Write time to the RTC registers
+    RTC.readTime();                                                               // Load the current time registers on the RTC
+    publishRTCTime();                                                             // Publish the time to the Particle console
 }
 
-void test_basic()
+void publishRTCTime() {                                                           // Publish the time in Particle's format - will print whatever time is in the register (Time or Alarm)
+  if (Particle.connected()) {
+    waitUntil(meterParticlePublish);
+    Particle.publish("RTC Time",Time.timeStr(RTC.date_to_epoch_seconds()),PRIVATE);
+  }
+}
+
+void secondsTillAlarm() {
+  if (Particle.connected()) {
+    char data[32];
+    snprintf(data,sizeof(data),"Going to sleep for %i seconds",alarmSeconds);
+    waitUntil(meterParticlePublish);
+    Particle.publish("Alarm", data, PRIVATE);
+  }
+  RTC.alarmSeconds(alarmSeconds);
+}
+
+void minuteRepeatingAlarm()                                                       // Shows the repeating alarm frequency
+{                                                       
+  if (Particle.connected()) {
+    waitUntil(meterParticlePublish);
+    Particle.publish("Alarm","Repeating every minute",PRIVATE);                   // Message to let you know what is going on
+  }             
+  RTC.disable_interrupt();                                                        // Prevent an immediate interrupt since this alarm starts from now       
+  RTC.setAlarmRepeat(EVERY_MINUTE);                                               // if alarming every minute, time registers larger than 1 second (hour, etc.) are don't-care
+  RTC.writeAlarm();                                                               // Choices are: EVERY_SECOND, EVERY_MINUTE, EVERY_HOUR, EVERY_DAY, EVERY_WEEK, EVERY_MONTH
+  RTC.clear_interrupt();                                                          // This prevents a alarm interrupt as soon as the alarm is set
+  RTC.enable_interrupt();
+}
+
+void hourlyRepeatingAlarm()                                                       // Sets an alarm that goes off every hour (long form)
 {
-  // Test basic functions (time read and write)
-  Serial.print ("The current time is ");
-  RTC.readTime(); // update RTC library's buffers from chip
-  printTime(0);
-  Serial.println("\nSetting times using direct method: 1/31/07 12:34:56");
-  
-    RTC.setSeconds(56);
-    RTC.setMinutes(34);
-    RTC.setHours(12);
-    RTC.setDays(31);
-    RTC.setMonths(1);
-    RTC.setYears(2007); // 2-digit or 4-digit years are supported
-    RTC.writeTime();
-    delay(500);  // This is not needed; just making it more clear that we are reading a new result
-    RTC.readTime();
-    Serial.print("Read back: ");
-    printTime(0);
-    Serial.println("  (we'll never forget)");
-    
-    Serial.println("Setting time using epoch seconds: 2971468800 (midnight on 2/29/2064)");
-    RTC.writeTime(2971468800u);
-    delay(500);  
-    RTC.readTime();    
-    Serial.print("Read back: ");
-    printTime(0);
-    Serial.println("  (Happy 21st birthday Carlotta) ");    
+  if (Particle.connected()) {
+    waitUntil(meterParticlePublish);
+    Particle.publish("Alarm","Repeating every hour",PRIVATE);                     // Message to let you know what is going on
+  }
+  RTC.setAlarmRepeat(EVERY_HOUR);                                                 // There is no DS1339 setting for 'alarm once' - user must shut off the alarm after it goes off.
 
-    Serial.println("Writing alarm: 8:00am on the 15th of the month.");
-    RTC.setSeconds(0);
-    RTC.setMinutes(0);
-    RTC.setHours(8);
-    RTC.setDays(15);
-    RTC.setAlarmRepeat(EVERY_MONTH); // There is no DS1339 setting for 'alarm once' - user must shut off the alarm after it goes off.
-    RTC.writeAlarm();
-    delay(500);
-    RTC.readAlarm();
-    Serial.print("Read back: ");
-    printTime(1);    
+  RTC.setSeconds(0);                                                              // Here we can set an alarm frequency
+  RTC.setMinutes(1);
+  RTC.setHours(0);
+  RTC.setDays(0);
+  RTC.setMonths(0);
+  RTC.setYears(0);
 
-    Serial.println("\nWriting alarm: 2:31:05 pm on the 3rd day of the week.");
-    RTC.setSeconds(5);
-    RTC.setMinutes(31);
-    RTC.setHours(14);
-    RTC.setDayOfWeek(3);
-    RTC.setAlarmRepeat(EVERY_WEEK); // to alarm on matching day-of-week instead of date
-    RTC.writeAlarm();
-    delay(500);
-    RTC.readAlarm();
-    Serial.print("Read back: ");
-    printTime(1);
-    Serial.println("\n");
+  RTC.writeAlarm();                                                               // Write the alarm to the registers
  }
 
-void test_interrupts()
-{
-  Serial.println("Setting a 1Hz periodic alarm interrupt to sleep in between. Watchen das blinkenlights...");
-  Serial.flush();
-  
-  // Steps to use an alarm interrupt:
-  // 1) attach an interrupt handler (it can be blank if you just want to wake)
-  // 2) enable alarm interrupt from RTC using RTC.enable_interrupt();
-  // 3) set and write the alarm time
-  // 4) sleep! ...zzz...
-  // 5) clear the interrupt from RTC using RTC.clear_interrupt();
-  // ...
-  // 6) If no further alarms desired, disable the RTC alarm interrupt using RTC.disable_interrupt();
-  
-  attachInterrupt(int_number, nap, FALLING);
-  RTC.enable_interrupt();
-  RTC.setAlarmRepeat(EVERY_SECOND); // if alarming every second, time registers larger than 1 second (hour, etc.) are don't-care
-  RTC.writeAlarm();
+// Helper Functions for Particle Functions and other utility functions
 
-  for(byte i = 0; i<3; i++)
-  {
-    digitalWrite(ledPin, HIGH);
-
-    delay(3); // wait >2 byte times for any pending Tx bytes to finish writing
-  
-    sleep_cpu(); // sleep. Will we waked by next alarm interrupt
-    RTC.clear_interrupt();
-
-    digitalWrite(ledPin, LOW);
-
-    delay(3); // wait >2 byte times for any pending Tx bytes to finish writing
-  
-    sleep_cpu(); // sleep. Will we waked by next alarm interrupt
-    RTC.clear_interrupt();
-  }
-
-  RTC.disable_interrupt(); // ensure we stop receiving interrupts
-  
-  detachInterrupt(int_number);
-  
-  Serial.println("Going to snooze for 10 seconds...");
-  Serial.flush();
-  read_time();
-  Serial.flush();
-  RTC.snooze(10);
-  read_time();
-  Serial.flush();
-  Serial.println("...and wake up again.");  
+void pinInterruptHandler() {                                                      // Interrupt handler - note no i2c commands can be in here!
+  alarmFlag = true;
 }
 
-void test_epoch_seconds()
+int setTimeZone(String command)
 {
-  // Output the time calculated in epoch seconds at midnight for every day between 1/1/2000 and 12/31/2099.
-  // Also, convert the result back to a date/time and make sure it matches the original value.
-  
-  // To ensure we are getting clean values to start with, no calculation results are written back to
-  // the RTC. Instead, we use the alarm to wake up when it rolls over midnight, then advance the clock
-  // to 23:59:59 of that same day. This way one 'day' passes per second, and a century's worth of tests
-  // will complete in ~10 hours.
-
-  unsigned char second;
-  unsigned char minute;
-  unsigned char hour;
-  unsigned char month;
-  unsigned char day;
-  unsigned int year;
-  
-  unsigned long old_epoch_seconds = 946684800;
-  unsigned long new_epoch_seconds = 946684800 + 1;
-  
-  Serial.println("Going to output and check epoch seconds at midnight on every day \n  from 1/1/2000 to 12/31/2099. This will take a long time! (overnight)\n  You probably want to capture the output to a file (e.g. hyperterminal). \n  Press SPACE to continue or any other key to skip.\n");
-  Serial.flush();
-  
-  while(!Serial.available()){}
-  if(Serial.read() == ' ')
-  {
-    Serial.println("Date, Seconds Since Epoch, Consistency Check Date, Consistency Check Result");
-
-
-    RTC.writeTime(old_epoch_seconds); // reset time to epoch
-    RTC.setAlarmRepeat(EVERY_DAY);
-    RTC.writeAlarm(old_epoch_seconds); // ensure alarm starts at a valid value too
-
-    RTC.enable_interrupt(); // make RTC generate a pulse every time one 'day' passes
-    
-    while(new_epoch_seconds > old_epoch_seconds) // keep going until date rolls over to 1/1/2000 again
-    {
-        // fastforward to the end of the day. The math for converting hours/min to seconds is trivial; 
-        // this test is mainly concerned with ensuring stuff like days-in-a-month and leap years are handled correctly.
-        RTC.readTime();  // restore known-good copy of date/time from chip to library's buffer
-        RTC.setHours(23);
-        RTC.setMinutes(59);
-        RTC.setSeconds(59);
-        RTC.writeTime(); // note: writing a new time resets the RTC's oscillator count ("milliseconds") to 0, so we have a full second until the next interrupt happens.
-        
-      while(digitalRead(INT_PIN) != 0) {}  // wait for 'day' to rollover. Pin 24 = INT2
-  
-        RTC.readTime();
-  
-        //store a copy of the original values
-        second = RTC.getSeconds();
-        minute = RTC.getMinutes();
-        hour = RTC.getHours();        
-        day = RTC.getDays();
-        month = RTC.getMonths();        
-        year = RTC.getYears();        
-
-        printTime(0);
-        
-        old_epoch_seconds = new_epoch_seconds;
-        new_epoch_seconds = RTC.date_to_epoch_seconds();
-
-        Serial.print(" , ");
-        Serial.print(new_epoch_seconds);
-        Serial.print(" , ");
-        
-        // ensure that the result converted back to date matches the original value.
-        // Remember that this function will update the contents of the RTC library's buffer, NOT on the chip.
-        RTC.epoch_seconds_to_date(new_epoch_seconds);
-        printTime(0);
-        
-        if( second == RTC.getSeconds() && minute == RTC.getMinutes() && hour == RTC.getHours() && day == RTC.getDays() && month == RTC.getMonths() && year == RTC.getYears() )
-        {
-          Serial.println(", Pass");
-        }
-        else
-        {
-          Serial.println(", FAIL!");
-        }
-        
-    }
-    Serial.println("\n\nDone!");
-    RTC.disable_interrupt();
+  char * pEND;
+  char data[256];
+  time_t t = Time.now();
+  int8_t tempTimeZoneOffset = strtol(command,&pEND,10);                           // Looks for the first integer and interprets it
+  if ((tempTimeZoneOffset < -12) | (tempTimeZoneOffset > 12)) return 0;           // Make sure it falls in a valid range or send a "fail" result
+  Time.zone((float)tempTimeZoneOffset);
+  EEPROM.update(0,tempTimeZoneOffset);                                            // Store the new value in EEPROM Position 0
+  snprintf(data, sizeof(data), "Time zone offset %i",tempTimeZoneOffset);
+  if (Particle.connected()) {
+      waitUntil(meterParticlePublish);
+      Particle.publish("Time", data, PRIVATE);
+      waitUntil(meterParticlePublish);
+      Particle.publish("Particle Time",Time.timeStr(t), PRIVATE);
   }
+  syncRTCtoParticleTime();
+  return 1;
 }
 
-
-void printTime(byte type)
+int setAlarmSeconds(String command)
 {
-  // Print a formatted string of the current date and time.
-  // If 'type' is non-zero, print as an alarm value (seconds thru DOW/month only)
-  // This function assumes the desired time values are already present in the RTC library buffer (e.g. readTime() has been called recently)
-
-  if(!type)
-  {
-    Serial.print(int(RTC.getMonths()));
-    Serial.print("/");  
-    Serial.print(int(RTC.getDays()));
-    Serial.print("/");  
-    Serial.print(RTC.getYears());
+  char * pEND;
+  char data[256];
+  unsigned long tempAlarmSeconds = strtol(command,&pEND,10);                      // Looks for the first integer and interprets it
+  if (tempAlarmSeconds < 0) return 0;                                             // Make sure it falls in a valid range or send a "fail" result
+  snprintf(data, sizeof(data), "Sleep Seconds set to %ld",tempAlarmSeconds);
+  if (Particle.connected()) {
+      waitUntil(meterParticlePublish);
+      Particle.publish("Time", data, PRIVATE);
   }
-  else
-  {
-    //if(RTC.getDays() == 0) // Day-Of-Week repeating alarm will have DayOfWeek *instead* of date, so print that.
-    {
-      Serial.print(int(RTC.getDayOfWeek()));
-      Serial.print("th day of week, ");
-    }
-    //else
-    {
-      Serial.print(int(RTC.getDays()));
-      Serial.print("th day of month, ");      
-    }
-  }
-  
-  Serial.print("  ");
-  Serial.print(int(RTC.getHours()));
-  Serial.print(":");
-  Serial.print(int(RTC.getMinutes()));
-  Serial.print(":");
-  Serial.print(int(RTC.getSeconds()));  
+  alarmSeconds = tempAlarmSeconds;
+  return 1;
 }
 
+int setAlarmMode(String command)                                                  // This is where we can enable or disable the sleep interval for the device
+{
+  char * pEND;
+  if (command != "1" && command != "0" && command != "2" && command != "3") return 0; // Before we begin, let's make sure we have a valid input
 
+  alarmMode = strtol(command,&pEND,10);
+  
+  return 1;
+}
+
+bool meterParticlePublish(void)                                                   // Keep out publishes from getting rate limited
+{
+  static unsigned long lastPublish=0;                                             // Initialize and store value here
+  if(millis() - lastPublish >= 1000) {                                            // The Particle platform rate limits to one publush per second
+    lastPublish = millis();
+    return 1;
+  }
+  else return 0;
+}
